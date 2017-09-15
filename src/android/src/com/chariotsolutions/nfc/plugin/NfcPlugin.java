@@ -2,9 +2,11 @@ package com.chariotsolutions.nfc.plugin;
 
 import java.io.IOException;
 import java.text.MessageFormat;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Date;
 
 // using wildcard imports so we can support Cordova 3.x
 import org.apache.cordova.*; // Cordova 3.x
@@ -15,6 +17,7 @@ import org.json.JSONObject;
 
 import android.app.Activity;
 import android.app.PendingIntent;
+import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.IntentFilter.MalformedMimeTypeException;
@@ -24,14 +27,20 @@ import android.nfc.NdefMessage;
 import android.nfc.NdefRecord;
 import android.nfc.NfcAdapter;
 import android.nfc.NfcEvent;
+import android.nfc.tech.NfcA;
+import android.nfc.tech.Ndef;
+import android.nfc.FormatException;
+import android.nfc.TagLostException;
 import android.nfc.Tag;
 import android.nfc.TagLostException;
 import android.nfc.tech.Ndef;
 import android.nfc.tech.NdefFormatable;
+import android.nfc.tech.MifareClassic;
 import android.os.Parcelable;
 import android.util.Log;
 
 public class NfcPlugin extends CordovaPlugin implements NfcAdapter.OnNdefPushCompleteCallback {
+    final protected static char[] hexArray = "0123456789ABCDEF".toCharArray();
     private static final String REGISTER_MIME_TYPE = "registerMimeType";
     private static final String REMOVE_MIME_TYPE = "removeMimeType";
     private static final String REGISTER_NDEF = "registerNdef";
@@ -40,6 +49,7 @@ public class NfcPlugin extends CordovaPlugin implements NfcAdapter.OnNdefPushCom
     private static final String REGISTER_DEFAULT_TAG = "registerTag";
     private static final String REMOVE_DEFAULT_TAG = "removeTag";
     private static final String WRITE_TAG = "writeTag";
+    private static final String WRITE_TAG_BY_SECTOR = "writeBySector";
     private static final String MAKE_READ_ONLY = "makeReadOnly";
     private static final String ERASE_TAG = "eraseTag";
     private static final String SHARE_TAG = "shareTag";
@@ -73,7 +83,7 @@ public class NfcPlugin extends CordovaPlugin implements NfcAdapter.OnNdefPushCom
     private CallbackContext handoverCallback;
 
     @Override
-    public boolean execute(String action, JSONArray data, CallbackContext callbackContext) throws JSONException {
+    public boolean execute(String action, JSONArray data, final CallbackContext callbackContext) throws JSONException {
 
         Log.d(TAG, "execute " + action);
 
@@ -115,6 +125,29 @@ public class NfcPlugin extends CordovaPlugin implements NfcAdapter.OnNdefPushCom
         } else if (action.equalsIgnoreCase(WRITE_TAG)) {
             writeTag(data, callbackContext);
 
+        } else if (action.equalsIgnoreCase(WRITE_TAG_BY_SECTOR)) {
+            final Tag tag = savedIntent.getParcelableExtra(NfcAdapter.EXTRA_TAG);
+            final String phrase = data.getString(0);
+            final String passChip = data.getString(1);
+            final int sectorMin = data.getInt(2);
+            final int sectorMax = data.getInt(3);
+            cordova.getThreadPool().execute(new Runnable() {
+                @Override
+                public void run() {
+                    Log.d(TAG,"Voy a iniciar el hilo separado");
+                    try{
+                        if(writeBySector(tag,phrase,passChip,sectorMin,sectorMax)){
+                            callbackContext.success();
+                        }else{
+                            callbackContext.error("La funcion de escribir retorno falso");
+                        }
+                    }catch (IOException e) {
+                    e.printStackTrace();
+                } catch (FormatException e) {
+                    e.printStackTrace();
+                }
+              }
+            }); 
         } else if (action.equalsIgnoreCase(MAKE_READ_ONLY)) {
             makeReadOnly(callbackContext);
 
@@ -241,6 +274,112 @@ public class NfcPlugin extends CordovaPlugin implements NfcAdapter.OnNdefPushCom
         Tag tag = savedIntent.getParcelableExtra(NfcAdapter.EXTRA_TAG);
         NdefRecord[] records = Util.jsonToNdefRecords(data.getString(0));
         writeNdefMessage(new NdefMessage(records), tag, callbackContext);
+    }
+    
+        private boolean writeBySector(Tag tag, String token,String password,int min, int max) throws IOException, FormatException{
+        Log.d(TAG,"Entre en escribir sectores");
+        NfcA classic= NfcA.get(tag);
+        if (classic!=null){
+            try{
+                MifareClassic mfc = MifareClassic.get(tag);
+
+                String jsonToWrite= token;
+
+                Log.i(TAG,"Tamaño json: "+jsonToWrite.getBytes().length+" Bloques: "+jsonToWrite.getBytes().length/16+" Sectores: ");
+                List<byte[]> dataChunked = divideArray(jsonToWrite.getBytes(),16);
+                int dataChunkedSize=dataChunked.size();
+                int controlDataChunked=0;
+                byte[]data;
+                try {
+                    mfc.connect();
+                    boolean auth = false;
+                    String cardData = null;
+                    int secCount = mfc.getSectorCount();
+                    int bCount = 0;
+                    int bIndex = 0;
+
+                    for(int j = 2; j < secCount; j++){
+                        auth = mfc.authenticateSectorWithKeyA(j, hexStringToByteArray(password));
+                        if(auth){
+                            bCount = mfc.getBlockCountInSector(j);
+                            Log.i(TAG,"Numero de sectores: "+bCount);
+                            bIndex = mfc.sectorToBlock(j);
+                            Log.d(TAG,"Bloques: "+ j);
+                            for(int i = 0; i < bCount; i++){
+                                if (j>min&&j<max){
+                                    if (i!=3) {
+                                        if (controlDataChunked < dataChunkedSize) {
+                                            Log.i(TAG, "Voy a intentar escribir en el bloque: " + bIndex);
+                                            try {
+                                                Log.i(TAG,"Tamaño del chunk de data: "+dataChunked.get(controlDataChunked).length+"Posición en el array: "+controlDataChunked);
+                                                mfc.writeBlock(bIndex, dataChunked.get(controlDataChunked));
+                                                Log.i(TAG, "Escritura exitosa");
+                                                controlDataChunked++;
+                                            } catch (Exception e) {
+                                                Log.i(TAG, "No logre escribir");
+                                                e.printStackTrace();
+                                            }
+                                        }else{
+                                            Log.i(TAG,"Se escribio todo el json");
+                                        }
+                                    }
+                                }
+                                data = mfc.readBlock(bIndex);
+                                Log.i(TAG, bytesToHex(data));
+                                bIndex++;
+                            }
+                        }else{
+                            Log.i(TAG,"Bloques; "+j);
+                            Log.i(TAG,"Wrong password");
+                        }
+                    }
+                    Log.d(TAG,"Voy a cerrar escritura");
+                    mfc.close();
+                    return true;
+                }catch (IOException e) {
+                    Log.e(TAG, e.getLocalizedMessage());
+                }
+            }catch (Exception e){
+                e.getMessage();
+                e.printStackTrace();
+                Log.i("ErroProtected","la tag es protected");
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private List<byte[]> divideArray(byte[] source, int chunksize) {
+
+        List<byte[]> result = new ArrayList<byte[]>();
+        int start = 0;
+        while (start < source.length) {
+            int end = Math.min(source.length, start + chunksize);
+            result.add(Arrays.copyOfRange(source, start,start+chunksize));
+            start += chunksize;
+        }
+        return result;
+    }
+
+    private byte[] hexStringToByteArray(String s) {
+        int len = s.length();
+        byte[] data = new byte[len / 2];
+        for (int i = 0; i < len; i += 2) {
+            data[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4)
+                    + Character.digit(s.charAt(i+1), 16));
+        }
+        return data;
+    }
+
+    private String bytesToHex(byte[] bytes) {
+        char[] hexChars = new char[bytes.length * 2];
+        for ( int j = 0; j < bytes.length; j++ ) {
+            int v = bytes[j] & 0xFF;
+            hexChars[j * 2] = hexArray[v >>> 4];
+            hexChars[j * 2 + 1] = hexArray[v & 0x0F];
+        }
+        return new String(hexChars);
     }
 
     private void writeNdefMessage(final NdefMessage message, final Tag tag, final CallbackContext callbackContext) {
@@ -437,6 +576,7 @@ public class NfcPlugin extends CordovaPlugin implements NfcAdapter.OnNdefPushCom
   }
 
     private void startNfc() {
+        Log.d(TAG,"StartNfc");
         createPendingIntent(); // onResume can call startNfc before execute
 
         getActivity().runOnUiThread(new Runnable() {
