@@ -276,7 +276,7 @@ public class NfcPlugin extends CordovaPlugin implements NfcAdapter.OnNdefPushCom
         writeNdefMessage(new NdefMessage(records), tag, callbackContext);
     }
     
-        private boolean writeBySector(Tag tag, String token,String password,int min, int max) throws IOException, FormatException{
+    private boolean writeBySector(Tag tag, String token,String password,int min, int max) throws IOException, FormatException{
         Log.d(TAG,"Entre en escribir sectores");
         NfcA classic= NfcA.get(tag);
         if (classic!=null){
@@ -298,30 +298,49 @@ public class NfcPlugin extends CordovaPlugin implements NfcAdapter.OnNdefPushCom
                     int bCount = 0;
                     int bIndex = 0;
 
-                    for(int j = 2; j < secCount; j++){
-                        auth = mfc.authenticateSectorWithKeyA(j, hexStringToByteArray(password));
+                    for(int j = min; j < max; j++){
+                        ///////////////////////////////CODIGO NUEVO//////////////////////////////////////////
+                        auth = mfc.authenticateSectorWithKeyB(j, hexStringToByteArray("FFFFFFFFFFFF"));
+                        if (auth){
+                            Log.d(TAG,"Autentiqué con clave fff en el sector "+j);
+                            //bit de accceso que traen las pulseras FF:07:80:69
+                            bIndex = mfc.sectorToBlock(j) + (mfc.getBlockCountInSector(j)-1);
+                            Log.i(TAG, "Voy a intentar escribir en el bloque: " + bIndex);
+                            try {
+                                String nuevaClave = "ffffffffffff00ff0f69"+password;
+                                Log.d(TAG,"El nuevo bloque será "+nuevaClave);
+                                mfc.writeBlock(bIndex, hexStringToByteArray(nuevaClave));
+                                Log.i(TAG, "Escritura exitosa");
+                            } catch (Exception e) {
+                                Log.i(TAG, "No logre escribir");
+                                e.printStackTrace();
+                            }
+                        }else{
+                            Log.d(TAG,"No logré autenticar el bloque "+j+" con la clave fff");
+                        }
+                        Log.d(TAG,"Logré salir del nuevo código, ahora voy con el viejo");
+                        /////////////////////////////////////////////////////////////////////////////////////
+                        auth = mfc.authenticateSectorWithKeyB(j, hexStringToByteArray(password));
                         if(auth){
                             bCount = mfc.getBlockCountInSector(j);
                             Log.i(TAG,"Numero de sectores: "+bCount);
                             bIndex = mfc.sectorToBlock(j);
                             Log.d(TAG,"Bloques: "+ j);
                             for(int i = 0; i < bCount; i++){
-                                if (j>min&&j<max){
-                                    if (i!=3) {
-                                        if (controlDataChunked < dataChunkedSize) {
-                                            Log.i(TAG, "Voy a intentar escribir en el bloque: " + bIndex);
-                                            try {
-                                                Log.i(TAG,"Tamaño del chunk de data: "+dataChunked.get(controlDataChunked).length+"Posición en el array: "+controlDataChunked);
-                                                mfc.writeBlock(bIndex, dataChunked.get(controlDataChunked));
-                                                Log.i(TAG, "Escritura exitosa");
-                                                controlDataChunked++;
-                                            } catch (Exception e) {
-                                                Log.i(TAG, "No logre escribir");
-                                                e.printStackTrace();
-                                            }
-                                        }else{
-                                            Log.i(TAG,"Se escribio todo el json");
+                                if (i!=3) {
+                                    if (controlDataChunked < dataChunkedSize) {
+                                        Log.i(TAG, "Voy a intentar escribir en el bloque: " + bIndex);
+                                        try {
+                                            Log.i(TAG,"Tamaño del chunk de data: "+dataChunked.get(controlDataChunked).length+"Posición en el array: "+controlDataChunked);
+                                            mfc.writeBlock(bIndex, dataChunked.get(controlDataChunked));
+                                            Log.i(TAG, "Escritura exitosa");
+                                            controlDataChunked++;
+                                        } catch (Exception e) {
+                                            Log.i(TAG, "No logre escribir");
+                                            e.printStackTrace();
                                         }
+                                    }else{
+                                        Log.i(TAG,"Se escribio todo el json");
                                     }
                                 }
                                 data = mfc.readBlock(bIndex);
